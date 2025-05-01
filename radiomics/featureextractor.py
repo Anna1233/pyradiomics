@@ -236,6 +236,7 @@ class RadiomicsFeatureExtractor:
     tolerance = _settings.get('geometryTolerance')
     additionalInfo = _settings.get('additionalInfo', False)
     resegmentShape = _settings.get('resegmentShape', False)
+    enableCropToTumorMask =  _settings.get('cropToTumorMask', True)
 
     if label is not None:
       _settings['label'] = label
@@ -326,8 +327,13 @@ class RadiomicsFeatureExtractor:
     # Calculate features for all (filtered) images in the generator
     for inputImage, imageTypeName, inputKwargs in imageGenerators:
       logger.info('Calculating features for %s image', imageTypeName)
-      inputImage, inputMask = imageoperations.cropToTumorMask(inputImage, mask, boundingBox, padDistance=kernelRadius)
-      featureVector.update(self.computeFeatures(inputImage, inputMask, imageTypeName, **inputKwargs))
+      if enableCropToTumorMask:
+            inputImage, inputMask = imageoperations.cropToTumorMask(inputImage, mask, boundingBox, padDistance=kernelRadius)
+            featureVector.update(self.computeFeatures(inputImage, inputMask, imageTypeName, **inputKwargs))
+            
+      else:
+            featureVector.update(self.computeFeatures(inputImage, mask, imageTypeName, **inputKwargs))
+           
 
     logger.debug('Features extracted')
 

@@ -21,6 +21,8 @@ mapping:
           min-ex: 0
       correctMask:
         type: bool
+      cropToTumorMask:
+        type: bool
       additionalInfo:
         type: bool
       label:
