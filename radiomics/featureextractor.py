@@ -272,6 +272,7 @@ class RadiomicsFeatureExtractor:
     featureVector = collections.OrderedDict()
     image, mask = self.loadImage(imageFilepath, maskFilepath, generalInfo, **_settings)
 
+
     # 2. Check whether loaded mask contains a valid ROI for feature extraction and get bounding box
     # Raises a ValueError if the ROI is invalid
     boundingBox, correctedMask = imageoperations.checkMask(image, mask, **_settings)
@@ -375,17 +376,18 @@ class RadiomicsFeatureExtractor:
     logger.info('Loading image and mask')
     if isinstance(ImageFilePath, six.string_types) and os.path.isfile(ImageFilePath):
       image = sitk.ReadImage(ImageFilePath)
-    elif isinstance(ImageFilePath, sitk.SimpleITK.Image):
+    elif isinstance(ImageFilePath, sitk.Image):
       image = ImageFilePath
     else:
       raise ValueError('Error reading image Filepath or SimpleITK object')
 
     if isinstance(MaskFilePath, six.string_types) and os.path.isfile(MaskFilePath):
       mask = sitk.ReadImage(MaskFilePath)
-    elif isinstance(MaskFilePath, sitk.SimpleITK.Image):
+    elif isinstance(MaskFilePath, sitk.Image):
       mask = MaskFilePath
     else:
-      raise ValueError('Error reading mask Filepath or SimpleITK object')
+      t=type(MaskFilePath)
+      raise ValueError(f'Error reading mask Filepath or SimpleITK object intead it is {t}')
 
     # process the mask
     mask = imageoperations.getMask(mask, **kwargs)

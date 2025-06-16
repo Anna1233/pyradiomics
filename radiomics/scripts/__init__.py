@@ -9,7 +9,10 @@ from multiprocessing import cpu_count, Manager, Pool
 import os
 import sys
 import threading
+from pathlib import Path
 
+import SimpleITK as sitk
+import six 
 import numpy
 from pykwalify.compat import yaml
 import pykwalify.core
@@ -20,6 +23,23 @@ import radiomics.featureextractor
 from . import segment, voxel
 
 from ruamel.yaml import YAML
+
+try:
+    import xlsxwriter
+except ImportError:
+    xlsxwriter = None
+
+try:
+    import xlwt
+except ImportError:
+    xlwt = None
+
+try:
+    import ezodf
+except ImportError:
+    ezodf = None
+
+
 
 class PyRadiomicsCommandLine:
 
@@ -41,7 +61,7 @@ class PyRadiomicsCommandLine:
     self.num_workers = 0
 
   @classmethod
-  def getParser(cls):
+  def getParser(cls):  
     parser = argparse.ArgumentParser(usage='%(prog)s image|batch [mask] [Options]',
                                      formatter_class=argparse.RawTextHelpFormatter)
 
@@ -56,7 +76,7 @@ class PyRadiomicsCommandLine:
                             help='Image file (single mode) or CSV batch file (batch mode)')
     inputGroup.add_argument('mask', nargs='?', metavar='MaskFILE', default=None,
                             help='Mask file identifying the ROI in the Image. \n'
-                                 'Only required when in single mode, ignored otherwise.')
+                                 'Only required when in single mode, ignored otherwise.')  # No changes will need to be made here, mask is already optional 
     inputGroup.add_argument('--param', '-p', metavar='FILE', default=None,
                             help='Parameter file containing the settings to be used in extraction')
     inputGroup.add_argument('--setting', '-s', metavar='"SETTING_NAME:VALUE"', action='append', default=[], type=str,
@@ -156,7 +176,7 @@ class PyRadiomicsCommandLine:
     self.num_workers = 1
 
     # Check if input represents a batch file
-    if self.args.input.endswith('.csv'):
+    if self.args.input.endswith('.csv') | self.args.input.endswith('.xls') | self.args.input.endswith('.xlsx') | self.args.input.endswith('.ods') | self.args.input.endswith('.tsv') | self.args.input.endswith('.txt'):
       self.logger.debug('Loading batch file "%s"', self.args.input)
       self.relative_path_start = os.path.dirname(self.args.input)
       with open(self.args.input, mode='r') as batchFile:
@@ -192,8 +212,37 @@ class PyRadiomicsCommandLine:
         self.num_workers = min(self.case_count, self.args.jobs)
     elif self.args.mask is not None:
       caseGenerator = [(1, {'Image': self.args.input, 'Mask': self.args.mask})]
+    elif self.args.input is not None: 
+      #Create default mask for all ones 
+      reader = sitk.ImageFileReader()
+      reader.SetFileName(self.args.input)
+      reader.LoadPrivateTagsOn()
+      reader.ReadImageInformation()
+      mask = numpy.full(tuple(reversed(reader.GetSize())), 1)
+      mask = sitk.GetImageFromArray(mask)
+      mask.SetOrigin(reader.GetOrigin())
+      mask.SetSpacing(reader.GetSpacing())
+      mask.SetDirection(reader.GetDirection())
+      # inside imageoperations::checkmask we see the expected datatype, so we match it here.
+      mask = sitk.Cast(mask, sitk.sitkUInt32)
+      
+      # In testing had trouble getting code to work. When saving, code was successful.
+      #self.logger.info('no mask specified, computation may be slow!')
+      #in_path=Path(self.args.input)
+      #self.args.mask=in_path.with_name(f"{in_path.stem}_mask.nhdr")
+      #self.logger.info('writing default mask to disk')
+      #sitk.WriteImage(mask, self.args.mask)
+
+      # suspect the real problem is we need to set label=1... somewhere?
+      self.args.mask=mask
+      #setting_overrides['label'] = self.args.label
+      #self.args.label = 1
+      self.args.setting.append('label:1')
+      
+      caseGenerator = [(1, {'Image': self.args.input, 'Mask': self.args.mask})]
+      
     else:
-      self.logger.error('Input is not recognized as batch, no mask specified, cannot compute result!')
+      self.logger.error('Input is not recognized as batch or image, cannot compute result!')
       return None
 
     return caseGenerator
@@ -221,7 +270,7 @@ class PyRadiomicsCommandLine:
       if not os.path.isfile(case['Image']):
         case_error = True
         self.logger.error('Image path for case (%i/%i) does not exist!', case_idx, self.case_count)
-      if not os.path.isfile(case['Mask']):
+      if not isinstance(case['Mask'], sitk.SimpleITK.Image) and not os.path.isfile(case['Mask']):
         case_error = True
         self.logger.error('Mask path for case (%i/%i) does not exist!', case_idx, self.case_count)
 
@@ -312,13 +361,17 @@ class PyRadiomicsCommandLine:
 
       # Format paths of image and mask files
       case['Image'] = pathFormatter(case['Image'])
-      case['Mask'] = pathFormatter(case['Mask'])
+      if not isinstance(case['Mask'], sitk.SimpleITK.Image):
+        case['Mask'] = pathFormatter(case['Mask'])
 
       if self.args.unix_path and os.path.sep != '/':
         case['Image'] = case['Image'].replace(os.path.sep, '/')
-        case['Mask'] = case['Mask'].replace(os.path.sep, '/')
+        if not isinstance(case['Mask'], sitk.SimpleITK.Image):
+          case['Mask'] = case['Mask'].replace(os.path.sep, '/')
 
-      # Write out results per case if format is 'csv' or 'txt', handle 'json' outside of this loop (issue #483)
+
+
+      # Write out results per case if format is 'csv', 'txt', 'tsv', 'xlsx', 'xls', 'ods', and handle 'json' outside of this loop (issue #483)
       if self.args.format == 'csv':
         writer = csv.DictWriter(self.args.out, headers, lineterminator='\n', extrasaction='ignore')
         if case_idx == 1:
@@ -327,6 +380,48 @@ class PyRadiomicsCommandLine:
       elif self.args.format == 'txt':
         for k, v in six.iteritems(case):
           self.args.out.write('Case-%d_%s: %s\n' % (case_idx, k, v))
+      elif self.args.format == 'tsv':
+          writer = csv.DictWriter(self.args.out, headers, delimiter='\t', lineterminator='\n', extrasaction='ignore')
+          if case_idx == 1:
+              writer.writeheader()
+          writer.writerow(case)
+      elif self.args.format == 'xlsx':
+          if xlsxwriter is None:
+              raise ImportError("xlsxwriter is required for writing .xlsx files")
+          if case_idx == 1:
+              self.workbook = xlsxwriter.Workbook(self.args.out)
+              self.worksheet = self.workbook.add_worksheet()
+              for col, h in enumerate(headers):
+                  self.worksheet.write(0, col, h)
+          for col, h in enumerate(headers):
+              self.worksheet.write(case_idx, col, case.get(h, ""))
+      elif self.args.format == 'xls':
+          if xlwt is None:
+              raise ImportError("xlwt is required for writing .xls files")
+          if case_idx == 1:
+              self.workbook = xlwt.Workbook()
+              self.worksheet = self.workbook.add_sheet('Sheet1')
+              for col, h in enumerate(headers):
+                  self.worksheet.write(0, col, h)
+          for col, h in enumerate(headers):
+              self.worksheet.write(case_idx, col, case.get(h, ""))
+      elif self.args.format == 'ods':
+          if ezodf is None:
+              raise ImportError("ezodf is required for writing .ods files")
+          if case_idx == 1:
+              ezodf.config.set_table_expand_strategy('all')  # Optional
+              self.doc = ezodf.newdoc(doctype="ods", filename=self.args.out)
+              self.sheet = ezodf.Sheet("Sheet1", size=(1000, len(headers)))
+              self.doc.sheets += self.sheet
+              for col, h in enumerate(headers):
+                  self.sheet[0, col].set_value(h)
+          for col, h in enumerate(headers):
+              self.sheet[case_idx, col].set_value(case.get(h, ""))
+      else:
+          raise ValueError(f"Unsupported format: {self.args.format}")
+
+
+
 
     # JSON dump of cases is handled outside of the loop, otherwise the resultant document would be invalid.
     if self.args.format == 'json':
